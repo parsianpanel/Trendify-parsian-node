@@ -1,57 +1,85 @@
-# syntax=docker/dockerfile:1
+FROM ubuntu:24.04
 
-FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS builder
+ENV DEBIAN_FRONTEND=noninteractive
 
-ARG TARGETOS
-ARG TARGETARCH
-ARG NODE_DOMAIN=altaria.proxy.rlwy.net
+# =========================
+# System packages
+# =========================
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    ca-certificates \
+    nginx \
+    openssl \
+    procps \
+    iproute2 \
+    net-tools \
+    nano \
+    vim \
+    wireguard-tools \
+    nftables \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN apk update && apk add --no-cache make git openssl
+# =========================
+# Required directories
+# =========================
+RUN mkdir -p \
+    /var/lib/pg-node/generated \
+    /var/lib/pg-node/certs \
+    /etc/nginx/sites-enabled \
+    /var/log/nginx
 
-WORKDIR /src
+# =========================
+# Build PasarGuard Node
+# =========================
+WORKDIR /tmp
 
-RUN git clone --depth 1 https://github.com/PasarGuard/node.git .
+RUN apt-get update && apt-get install -y \
+    git \
+    make \
+    golang-go \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 https://github.com/PasarGuard/node.git /tmp/pasarguard-node
+
+WORKDIR /tmp/pasarguard-node
 
 RUN go mod download
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} make NAME=main build
+RUN CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64 \
+    make NAME=main build
 
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} make install_xray
+RUN GOOS=linux \
+    GOARCH=amd64 \
+    make install_xray
 
-# Generate self-signed TLS certificate
-RUN mkdir -p /src/certs && \
-    openssl req -x509 -newkey ec \
-    -pkeyopt ec_paramgen_curve:P-256 \
-    -keyout /src/certs/ssl_key.pem \
-    -out /src/certs/ssl_cert.pem \
-    -days 3650 -nodes \
-    -subj "/CN=${NODE_DOMAIN}" \
-    -addext "subjectAltName = DNS:${NODE_DOMAIN},DNS:localhost,IP:127.0.0.1"
+RUN cp /tmp/pasarguard-node/main /usr/local/bin/pasarguard-node
 
-FROM alpine:latest
+# =========================
+# Nginx
+# =========================
+COPY railway.conf /etc/nginx/sites-available/default
 
-RUN apk update && apk add --no-cache \
-    wireguard-tools \
-    nftables \
-    iproute2 \
-    procps
+RUN rm -f /etc/nginx/sites-enabled/default \
+    && ln -s /etc/nginx/sites-available/default \
+       /etc/nginx/sites-enabled/default
+
+# =========================
+# Startup
+# =========================
+COPY start-railway.sh /usr/local/bin/start-railway.sh
+
+RUN sed -i 's/\r$//' /usr/local/bin/start-railway.sh \
+    && chmod +x /usr/local/bin/start-railway.sh
 
 WORKDIR /app
 
-COPY --from=builder /src/main /app/main
-COPY --from=builder /usr/local/bin/xray /usr/local/bin/xray
-COPY --from=builder /usr/local/share/xray /usr/local/share/xray
-COPY --from=builder /src/certs /app/certs
+# Railway HTTP port
+EXPOSE 8080
 
-ENV SSL_CERT_FILE=/app/certs/ssl_cert.pem
-ENV SSL_KEY_FILE=/app/certs/ssl_key.pem
-ENV NODE_HOST=0.0.0.0
-ENV SERVICE_PORT=62050
-ENV SERVICE_PROTOCOL=grpc
-ENV GENERATED_CONFIG_PATH=/var/lib/pg-node/generated
-
-RUN mkdir -p /var/lib/pg-node/generated
-
+# PasarGuard Node
 EXPOSE 62050
 
-ENTRYPOINT ["./main"]
+ENTRYPOINT ["/usr/local/bin/start-railway.sh"]

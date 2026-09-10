@@ -101,7 +101,7 @@ RUN sed -i 's/\r$//' /usr/local/bin/start-railway.sh \
 # =========================================================
 # Environment
 # =========================================================
-ENV NODE_HOST=127.0.0.1
+ENV NODE_HOST=0.0.0.0
 ENV SERVICE_PORT=62050
 ENV SERVICE_PROTOCOL=grpc
 ENV GENERATED_CONFIG_PATH=/var/lib/pg-node/generated
